@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # initialize submodules recursively
-git submodule update --init --recursive
+git submodule update --init --force --recursive
 
 # update monero-core
 cd ./external/monero-core
