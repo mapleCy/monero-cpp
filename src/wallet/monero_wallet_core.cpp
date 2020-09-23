@@ -116,7 +116,7 @@ namespace monero {
     return opt_val == boost::none ? false : val == *opt_val;
   }
 
-  std::shared_ptr<monero_tx_wallet> build_tx_with_incoming_transfer(const tools::wallet2& m_w2, uint64_t height, const crypto::hash &payment_id, const tools::wallet2::payment_details &pd) {
+  std::shared_ptr<monero_tx_wallet> build_tx_with_incoming_transfer(tools::wallet2& m_w2, uint64_t height, const crypto::hash &payment_id, const tools::wallet2::payment_details &pd) {
 
     // construct block
     std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
@@ -169,7 +169,7 @@ namespace monero {
     return tx;
   }
 
-  std::shared_ptr<monero_tx_wallet> build_tx_with_outgoing_transfer(const tools::wallet2& m_w2, uint64_t height, const crypto::hash &txid, const tools::wallet2::confirmed_transfer_details &pd) {
+  std::shared_ptr<monero_tx_wallet> build_tx_with_outgoing_transfer(tools::wallet2& m_w2, uint64_t height, const crypto::hash &txid, const tools::wallet2::confirmed_transfer_details &pd) {
 
     // construct block
     std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
@@ -338,7 +338,7 @@ namespace monero {
     return tx;
   }
 
-  std::shared_ptr<monero_tx_wallet> build_tx_with_vout(const tools::wallet2& m_w2, const tools::wallet2::transfer_details& td) {
+  std::shared_ptr<monero_tx_wallet> build_tx_with_vout(tools::wallet2& m_w2, const tools::wallet2::transfer_details& td) {
 
     // construct block
     std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
@@ -2455,15 +2455,17 @@ namespace monero {
     }
   }
 
-  std::string monero_wallet_core::sign_message(const std::string& msg) const {
-    return m_w2->sign(msg);
+  std::string monero_wallet_core::sign_message(const std::string& msg, monero_message_signature_type signature_type, uint32_t account_idx, uint32_t subaddress_idx) const {
+    cryptonote::subaddress_index index = {account_idx, subaddress_idx};
+    tools::wallet2::message_signature_type_t signature_type_w2 = signature_type == monero_message_signature_type::SIGN_WITH_SPEND_KEY ? tools::wallet2::message_signature_type_t::sign_with_spend_key : tools::wallet2::message_signature_type_t::sign_with_view_key;
+    return m_w2->sign(msg, signature_type_w2, index);
   }
 
-  bool monero_wallet_core::verify_message(const std::string& msg, const std::string& address, const std::string& signature) const {
+  monero_message_signature_result monero_wallet_core::verify_message(const std::string& msg, const std::string& address, const std::string& signature) const {
 
     // validate and parse address or url
     cryptonote::address_parse_info info;
-    std::string err;
+    std::string err = "Invalid address";
     if (!get_account_address_from_str_or_url(info, m_w2->nettype(), address,
       [&err](const std::string &url, const std::vector<std::string> &addresses, bool dnssec_valid)->std::string {
         if (!dnssec_valid) {
@@ -2480,8 +2482,16 @@ namespace monero {
       throw std::runtime_error(err);
     }
 
-    // verify and return result
-    return m_w2->verify(msg, info.address, signature);
+    // verify message
+    tools:wallet2::message_signature_result_t result_w2 = m_w2->verify(msg, info.address, signature);
+
+    // translate result
+    monero_message_signature_result result;
+    result.m_is_good = result_w2.valid;
+    result.m_is_old = result_w2.old;
+    result.m_signature_type = result_w2.type == tools::wallet2::message_signature_type_t::sign_with_spend_key ? monero_message_signature_type::SIGN_WITH_SPEND_KEY : monero_message_signature_type::SIGN_WITH_VIEW_KEY;
+    result.m_version = result_w2.version;
+    return result;
   }
 
   std::string monero_wallet_core::get_tx_key(const std::string& tx_hash) const {

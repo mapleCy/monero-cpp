@@ -1256,6 +1256,26 @@ namespace monero {
     return root;
   }
 
+  // -------------------- MONERO MESSAGE SIGNATURE RESULT ---------------------
+
+  rapidjson::Value monero_message_signature_result::to_rapidjson_val(rapidjson::Document::AllocatorType& allocator) const {
+
+    // create root
+    rapidjson::Value root(rapidjson::kObjectType);
+
+    // set bool values
+    monero_utils::addJsonMember("isGood", m_is_good, allocator, root);
+    monero_utils::addJsonMember("isOld", m_is_old, allocator, root);
+
+    // set num values
+    rapidjson::Value value_num(rapidjson::kNumberType);
+    monero_utils::addJsonMember("version", m_version, allocator, root, value_num);
+    monero_utils::addJsonMember("signatureType", (uint8_t) (m_signature_type == monero_message_signature_type::SIGN_WITH_SPEND_KEY ? 0 : 1), allocator, root, value_num);
+
+    // return root
+    return root;
+  }
+
   // ----------------------------- MONERO CHECK -------------------------------
 
   rapidjson::Value monero_check::to_rapidjson_val(rapidjson::Document::AllocatorType& allocator) const {
