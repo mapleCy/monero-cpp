@@ -116,6 +116,25 @@ namespace monero {
     return opt_val == boost::none ? false : val == *opt_val;
   }
 
+  // compute m_num_confirmations TODO monero core: this logic is based on wallet_rpc_server.cpp `set_confirmations` but it should be encapsulated in wallet2
+  void set_num_confirmations(std::shared_ptr<monero_tx_wallet>& tx, uint64_t blockchain_height) {
+    std::shared_ptr<monero_block>& block = tx->m_block.get();
+    if (block->m_height.get() >= blockchain_height || (block->m_height.get() == 0 && !tx->m_in_tx_pool.get())) tx->m_num_confirmations = 0;
+    else tx->m_num_confirmations = blockchain_height - block->m_height.get();
+  }
+
+  // compute m_num_suggested_confirmations  TODO monero core: this logic is based on wallet_rpc_server.cpp `set_confirmations` but it should be encapsulated in wallet2
+  void set_num_suggested_confirmations(std::shared_ptr<monero_incoming_transfer>& incoming_transfer, uint64_t blockchain_height, uint64_t block_reward, uint64_t unlock_time) {
+    if (block_reward == 0) incoming_transfer->m_num_suggested_confirmations = 0;
+    else incoming_transfer->m_num_suggested_confirmations = (incoming_transfer->m_amount.get() + block_reward - 1) / block_reward;
+    if (unlock_time < CRYPTONOTE_MAX_BLOCK_NUMBER) {
+      if (unlock_time > blockchain_height) incoming_transfer->m_num_suggested_confirmations = std::max(incoming_transfer->m_num_suggested_confirmations.get(), unlock_time - blockchain_height);
+    } else {
+      const uint64_t now = time(NULL);
+      if (unlock_time > now) incoming_transfer->m_num_suggested_confirmations = std::max(incoming_transfer->m_num_suggested_confirmations.get(), (unlock_time - now + DIFFICULTY_TARGET_V2 - 1) / DIFFICULTY_TARGET_V2);
+    }
+  }
+
   std::shared_ptr<monero_tx_wallet> build_tx_with_incoming_transfer(tools::wallet2& m_w2, uint64_t height, const crypto::hash &payment_id, const tools::wallet2::payment_details &pd) {
 
     // construct block
@@ -144,11 +163,7 @@ namespace monero {
     tx->m_in_tx_pool = false;
     tx->m_relay = true;
     tx->m_is_double_spend_seen = false;
-
-    // compute m_num_confirmations TODO monero core: this logic is based on wallet_rpc_server.cpp:87 but it should be encapsulated in wallet2
-    // TODO: factor out this duplicate code with build_tx_with_outgoing_transfer()
-    if (*block->m_height >= height || (*block->m_height == 0 && !*tx->m_in_tx_pool)) tx->m_num_confirmations = 0;
-    else tx->m_num_confirmations = height - *block->m_height;
+    set_num_confirmations(tx, height);
 
     // construct transfer
     std::shared_ptr<monero_incoming_transfer> incoming_transfer = std::make_shared<monero_incoming_transfer>();
@@ -158,12 +173,7 @@ namespace monero {
     incoming_transfer->m_account_index = pd.m_subaddr_index.major;
     incoming_transfer->m_subaddress_index = pd.m_subaddr_index.minor;
     incoming_transfer->m_address = m_w2.get_subaddress_as_str(pd.m_subaddr_index);
-
-    // compute m_num_suggested_confirmations  TODO monero core: this logic is based on wallet_rpc_server.cpp:87 `set_confirmations` but it should be encapsulated in wallet2
-    // TODO: factor out this duplicate code with build_tx_with_outgoing_transfer()
-    uint64_t block_reward = m_w2.get_last_block_reward();
-    if (block_reward == 0) incoming_transfer->m_num_suggested_confirmations = 0;
-    else incoming_transfer->m_num_suggested_confirmations = (*incoming_transfer->m_amount + block_reward - 1) / block_reward;
+    set_num_suggested_confirmations(incoming_transfer, height, m_w2.get_last_block_reward(), pd.m_unlock_time);
 
     // return pointer to new tx
     return tx;
@@ -197,10 +207,7 @@ namespace monero {
     tx->m_in_tx_pool = false;
     tx->m_relay = true;
     tx->m_is_double_spend_seen = false;
-
-    // compute m_num_confirmations TODO monero core: this logic is based on wallet_rpc_server.cpp:87 but it should be encapsulated in wallet2
-    if (*block->m_height >= height || (*block->m_height == 0 && !*tx->m_in_tx_pool)) tx->m_num_confirmations = 0;
-    else tx->m_num_confirmations = height - *block->m_height;
+    set_num_confirmations(tx, height);
 
     // construct transfer
     std::shared_ptr<monero_outgoing_transfer> outgoing_transfer = std::make_shared<monero_outgoing_transfer>();
@@ -238,7 +245,7 @@ namespace monero {
     return tx;
   }
 
-  std::shared_ptr<monero_tx_wallet> build_tx_with_incoming_transfer_unconfirmed(const tools::wallet2& m_w2, const crypto::hash &payment_id, const tools::wallet2::pool_payment_details &ppd) {
+  std::shared_ptr<monero_tx_wallet> build_tx_with_incoming_transfer_unconfirmed(const tools::wallet2& m_w2, uint64_t height, const crypto::hash &payment_id, const tools::wallet2::pool_payment_details &ppd) {
 
     // construct tx
     const tools::wallet2::payment_details &pd = ppd.m_pd;
@@ -270,11 +277,7 @@ namespace monero {
     incoming_transfer->m_account_index = pd.m_subaddr_index.major;
     incoming_transfer->m_subaddress_index = pd.m_subaddr_index.minor;
     incoming_transfer->m_address = m_w2.get_subaddress_as_str(pd.m_subaddr_index);
-
-    // compute m_num_suggested_confirmations  TODO monero core: this logic is based on wallet_rpc_server.cpp:87 but it should be encapsulated in wallet2
-    uint64_t block_reward = m_w2.get_last_block_reward();
-    if (block_reward == 0) incoming_transfer->m_num_suggested_confirmations = 0;
-    else incoming_transfer->m_num_suggested_confirmations = (*incoming_transfer->m_amount + block_reward - 1) / block_reward;
+    set_num_suggested_confirmations(incoming_transfer, height, m_w2.get_last_block_reward(), pd.m_unlock_time);
 
     // return pointer to new tx
     return tx;
@@ -3254,7 +3257,7 @@ namespace monero {
       std::list<std::pair<crypto::hash, tools::wallet2::pool_payment_details>> payments;
       m_w2->get_unconfirmed_payments(payments, account_index, subaddress_indices);
       for (std::list<std::pair<crypto::hash, tools::wallet2::pool_payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
-        std::shared_ptr<monero_tx_wallet> tx = build_tx_with_incoming_transfer_unconfirmed(*m_w2, i->first, i->second);
+        std::shared_ptr<monero_tx_wallet> tx = build_tx_with_incoming_transfer_unconfirmed(*m_w2, height, i->first, i->second);
         merge_tx(tx, tx_map, block_map, false);
       }
     }
