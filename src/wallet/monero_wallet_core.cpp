@@ -2228,14 +2228,22 @@ namespace monero {
       }
 
       // deserialize tx
+      bool loaded = false;
       tools::wallet2::pending_tx ptx;
       try {
         std::istringstream iss(blob);
-        boost::archive::portable_binary_iarchive ar(iss);
-        ar >> ptx;
-      } catch (...) {
-        throw std::runtime_error("Failed to parse tx metadata");
+        binary_archive<false> ar(iss);
+        if (::serialization::serialize(ar, ptx)) loaded = true;
+      } catch (...) {}
+      if (!loaded) {
+        try {
+          std::istringstream iss(blob);
+          boost::archive::portable_binary_iarchive ar(iss);
+          ar >> ptx;
+          loaded = true;
+        } catch (...) {}
       }
+      if (!loaded) throw std::runtime_error("Failed to parse tx metadata");
 
       // commit tx
       try {
