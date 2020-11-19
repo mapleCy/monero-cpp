@@ -697,7 +697,6 @@ namespace monero {
       this->m_sync_end_height = boost::none;
       m_prev_balance = wallet.get_balance();
       m_prev_unlocked_balance = wallet.get_unlocked_balance();
-      check_for_changed_unlocked_txs(); // cache locked txs for later comparison
     }
 
     ~wallet2_listener() {
@@ -706,6 +705,11 @@ namespace monero {
     }
 
     void update_listening() {
+
+      // if starting to listen, cache locked txs for later comparison
+      if (!m_wallet.get_listeners().empty() && m_w2.callback() == nullptr) check_for_changed_unlocked_txs();
+
+      // update callback
       m_w2.callback(m_wallet.get_listeners().empty() ? nullptr : this);
     }
 
@@ -726,116 +730,123 @@ namespace monero {
       // ignore notifications before sync start height, irrelevant to clients
       if (m_sync_start_height == boost::none || height < *m_sync_start_height) return;
 
-      // notify listeners of block
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        listener->on_new_block(height);
-      }
+      // process notification off main thread
+      // TODO: recycle threads to reduce thread creation?
+      boost::thread([this, height, cn_block]() {
 
-      // notify listeners of sync progress
-      if (height >= *m_sync_end_height) m_sync_end_height = height + 1; // increase end height if necessary
-      double percent_done = (double) (height - *m_sync_start_height + 1) / (double) (*m_sync_end_height - *m_sync_start_height);
-      std::string message = std::string("Synchronizing");
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        listener->on_sync_progress(height, *m_sync_start_height, *m_sync_end_height, percent_done, message);
-      }
+        // notify listeners of new block
+        on_new_block_mt(height);
 
-      // notify if balances change
-      bool balances_changed = check_for_changed_balances();
+        // notify listeners of sync progress
+        if (height >= *m_sync_end_height) m_sync_end_height = height + 1; // increase end height if necessary
+        double percent_done = (double) (height - *m_sync_start_height + 1) / (double) (*m_sync_end_height - *m_sync_start_height);
+        std::string message = std::string("Synchronizing");
+        on_sync_progress_mt(height, *m_sync_start_height, *m_sync_end_height, percent_done, message);
 
-      // notify when txs unlock after wallet is synced
-      if (balances_changed && m_wallet.is_synced()) check_for_changed_unlocked_txs();
+        // notify if balances change
+        bool balances_changed = check_for_changed_balances();
+
+        // notify when txs unlock after wallet is synced
+        if (balances_changed && m_wallet.is_synced()) check_for_changed_unlocked_txs();
+      });
     }
 
     void on_unconfirmed_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index) override {
       if (m_wallet.get_listeners().empty()) return;
 
-      // create library tx
-      std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx, true));
-      tx->m_hash = epee::string_tools::pod_to_hex(txid);
-      tx->m_is_locked = true;
-      std::shared_ptr<monero_output_wallet> output = std::make_shared<monero_output_wallet>();
-      tx->m_outputs.push_back(output);
-      output->m_tx = tx;
-      output->m_amount = amount;
-      output->m_account_index = subaddr_index.major;
-      output->m_subaddress_index = subaddr_index.minor;
+      // process notification off main threads
+      boost::thread([this, height, txid, cn_tx, amount, subaddr_index]() {
 
-      // notify listeners of output
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        listener->on_output_received(*output);
-      }
+        // create library tx
+        std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx, true));
+        tx->m_hash = epee::string_tools::pod_to_hex(txid);
+        tx->m_is_locked = true;
+        std::shared_ptr<monero_output_wallet> output = std::make_shared<monero_output_wallet>();
+        tx->m_outputs.push_back(output);
+        output->m_tx = tx;
+        output->m_amount = amount;
+        output->m_account_index = subaddr_index.major;
+        output->m_subaddress_index = subaddr_index.minor;
 
-      // notify if balances changed
-      check_for_changed_balances();
+        // notify listeners of output
+        on_output_received_mt(*output);
 
-      // free memory
-      output.reset();
-      tx.reset();
+        // notify if balances changed
+        check_for_changed_balances();
+
+        // free memory
+        output.reset();
+        tx.reset();
+      });
     }
 
     void on_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index, bool is_change, uint64_t unlock_height) override {
       if (m_wallet.get_listeners().empty()) return;
 
-      // create native library tx
-      std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
-      block->m_height = height;
-      std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx, true));
-      block->m_txs.push_back(tx);
-      tx->m_block = block;
-      tx->m_hash = epee::string_tools::pod_to_hex(txid);
-      tx->m_unlock_height = unlock_height;
-      tx->m_is_locked = true;
-      std::shared_ptr<monero_output_wallet> output = std::make_shared<monero_output_wallet>();
-      tx->m_outputs.push_back(output);
-      output->m_tx = tx;
-      output->m_amount = amount;
-      output->m_account_index = subaddr_index.major;
-      output->m_subaddress_index = subaddr_index.minor;
+      // process notification off main thread
+      boost::thread([this, height, txid, cn_tx, amount, subaddr_index, is_change, unlock_height]() {
 
-      // notify listeners of output
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        listener->on_output_received(*output);
-      }
+        // create native library tx
+        std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
+        block->m_height = height;
+        std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx, true));
+        block->m_txs.push_back(tx);
+        tx->m_block = block;
+        tx->m_hash = epee::string_tools::pod_to_hex(txid);
+        tx->m_unlock_height = unlock_height;
+        tx->m_is_locked = true;
+        std::shared_ptr<monero_output_wallet> output = std::make_shared<monero_output_wallet>();
+        tx->m_outputs.push_back(output);
+        output->m_tx = tx;
+        output->m_amount = amount;
+        output->m_account_index = subaddr_index.major;
+        output->m_subaddress_index = subaddr_index.minor;
 
-      // watch for unlock
-      m_prev_locked_tx_hashes.insert(tx->m_hash.get());
+        // notify listeners of output
+        on_output_received_mt(*output);
 
-      // free memory
-      monero_utils::free(block);
-      output.reset();
-      tx.reset();
+        // watch for unlock
+        m_prev_locked_tx_hashes.insert(tx->m_hash.get());
+
+        // free memory
+        monero_utils::free(block);
+        output.reset();
+        tx.reset();
+      });
     }
 
     void on_money_spent(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx_in, uint64_t amount, const cryptonote::transaction& cn_tx_out, const cryptonote::subaddress_index& subaddr_index) override {
       if (m_wallet.get_listeners().empty()) return;
       if (&cn_tx_in != &cn_tx_out) throw std::runtime_error("on_money_spent() in tx is different than out tx");
 
-      // create native library tx
-      std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
-      block->m_height = height;
-      std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx_in, true));
-      block->m_txs.push_back(tx);
-      tx->m_block = block;
-      tx->m_hash = epee::string_tools::pod_to_hex(txid);
-      std::shared_ptr<monero_output_wallet> output = std::make_shared<monero_output_wallet>();
-      tx->m_inputs.push_back(output);
-      output->m_tx = tx;
-      output->m_amount = amount;
-      output->m_account_index = subaddr_index.major;
-      output->m_subaddress_index = subaddr_index.minor;
+      // process notification off main thread
+      boost::thread([this, height, txid, cn_tx_in, amount, cn_tx_out, subaddr_index]() {
 
-      // notify listeners of output
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        listener->on_output_spent(*output);
-      }
+        // create native library tx
+        std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
+        block->m_height = height;
+        std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx_in, true));
+        block->m_txs.push_back(tx);
+        tx->m_block = block;
+        tx->m_hash = epee::string_tools::pod_to_hex(txid);
+        std::shared_ptr<monero_output_wallet> output = std::make_shared<monero_output_wallet>();
+        tx->m_inputs.push_back(output);
+        output->m_tx = tx;
+        output->m_amount = amount;
+        output->m_account_index = subaddr_index.major;
+        output->m_subaddress_index = subaddr_index.minor;
 
-      // watch for unlock
-      m_prev_locked_tx_hashes.insert(tx->m_hash.get());
+        // notify listeners of output
+        on_output_spent_mt(*output);
 
-      // free memory
-      monero_utils::free(block);
-      output.reset();
-      tx.reset();
+        // watch for unlock
+        m_prev_locked_tx_hashes.insert(tx->m_hash.get());
+
+        // free memory
+        monero_utils::free(block);
+        output.reset();
+        tx.reset();
+      });
     }
 
   private:
@@ -847,15 +858,54 @@ namespace monero {
     uint64_t m_prev_unlocked_balance;
     std::set<std::string> m_prev_locked_tx_hashes;
 
+
+    void on_sync_progress_mt(uint64_t height, uint64_t start_height, uint64_t end_height, double percent_done, const std::string& message) {
+      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+        boost::thread([this, listener, height, start_height, end_height, percent_done, message]() {
+          listener->on_sync_progress(height, start_height, end_height, percent_done, message);
+        });
+      }
+    }
+
+    void on_new_block_mt(uint64_t height) {
+      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+        boost::thread([this, listener, height]() {
+          listener->on_new_block(height);
+        });
+      }
+    }
+
+    void on_balances_changed_mt(uint64_t new_balance, uint64_t new_unlocked_balance) {
+      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+        boost::thread([this, listener, new_balance, new_unlocked_balance]() {
+          listener->on_balances_changed(new_balance, new_unlocked_balance);
+        });
+      }
+    }
+
+    void on_output_received_mt(const monero_output_wallet& output) {
+      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+        boost::thread([this, listener, output]() {
+          listener->on_output_received(output);
+        });
+      }
+    }
+
+    void on_output_spent_mt(const monero_output_wallet& output) {
+      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+        boost::thread([this, listener, output]() {
+          listener->on_output_spent(output);
+        });
+      }
+    }
+
     bool check_for_changed_balances() {
       uint64_t balance = m_wallet.get_balance();
       uint64_t unlocked_balance = m_wallet.get_unlocked_balance();
-      if (m_prev_balance != balance || m_prev_unlocked_balance != unlocked_balance) {
+      if (balance != m_prev_balance || unlocked_balance != m_prev_unlocked_balance) {
         m_prev_balance = balance;
         m_prev_unlocked_balance = unlocked_balance;
-        for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-          listener->on_balances_changed(balance, unlocked_balance);
-        }
+        on_balances_changed_mt(balance, unlocked_balance);
         return true;
       }
       return false;
@@ -874,8 +924,8 @@ namespace monero {
       std::vector<std::string> tx_hashes_no_longer_locked;
       for (const std::string prev_locked_tx_hash : m_prev_locked_tx_hashes) {
         bool found = false;
-        for (const std::shared_ptr<monero_tx_wallet>& cur_locked_tx : locked_txs) {
-          if (cur_locked_tx->m_hash.get() == prev_locked_tx_hash) {
+        for (const std::shared_ptr<monero_tx_wallet>& locked_tx : locked_txs) {
+          if (locked_tx->m_hash.get() == prev_locked_tx_hash) {
             found = true;
             break;
           }
@@ -889,7 +939,7 @@ namespace monero {
         query.m_hashes = tx_hashes_no_longer_locked;
         query.m_is_locked = false;
         query.m_is_confirmed = true;
-        query.m_include_outputs = true; // TODO: fetch outputs that are no longer locked directly?
+        query.m_include_outputs = true;
         std::vector<std::string> missing_tx_hashes;
         txs_no_longer_locked = m_wallet.get_txs(query, missing_tx_hashes);
       }
@@ -897,9 +947,7 @@ namespace monero {
       // notify listeners of newly unlocked tx outputs
       for (const std::shared_ptr<monero_tx_wallet>& unlocked_tx : txs_no_longer_locked) {
         for (const std::shared_ptr<monero_output_wallet>& output : unlocked_tx->get_outputs_wallet()) {
-          for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-            listener->on_output_received(*output);
-          }
+          on_output_received_mt(*output);
         }
       }
 
@@ -1246,7 +1294,7 @@ namespace monero {
     return m_w2->get_blockchain_current_height();
   }
 
-  uint64_t monero_wallet_core::get_sync_height() const {
+  uint64_t monero_wallet_core::get_sync_height() const {  // TODO: rename to get_sync_from_height()
     return m_w2->get_refresh_from_block_height();
   }
 
