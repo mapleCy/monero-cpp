@@ -698,12 +698,13 @@ namespace monero {
       this->m_sync_end_height = boost::none;
       m_prev_balance = wallet.get_balance();
       m_prev_unlocked_balance = wallet.get_unlocked_balance();
-      m_notification_pool = std::unique_ptr<tools::threadpool>(tools::threadpool::getNewForUnitTests(tools::get_max_concurrency()));  // TODO (monero-core): utility can be for general use
+      m_notification_pool = std::unique_ptr<tools::threadpool>(tools::threadpool::getNewForUnitTests(1));  // TODO (monero-core): utility can be for general use
     }
 
     ~wallet2_listener() {
       MTRACE("~wallet2_listener()");
       m_w2.callback(nullptr);
+      m_notification_pool->recycle();
     }
 
     void update_listening() {
@@ -729,6 +730,7 @@ namespace monero {
       m_notification_pool->submit(&waiter, [this]() {
         m_sync_start_height = boost::none;
         m_sync_end_height = boost::none;
+        m_notification_pool->recycle();
       });
     }
 
@@ -3485,16 +3487,9 @@ namespace monero {
     if (m_sync_loop_running) return;  // only run one loop at a time
     m_sync_loop_running = true;
 
-//    tools::threadpool& tpool = tools::threadpool::getInstance();
-//    tools::threadpool::waiter waiter(tpool);
-//    for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-//      std::cout << "creating thread 1" << std::endl;
-//      tpool.submit(&waiter, [this, listener, height, start_height, end_height, percent_done, message]() {
-
     // start sync loop thread
-    std::cout << "Creating thread with boost::thread" << std::endl;
+    // TODO: use global threadpool, background sync wasm wallet in c++ thread
     m_syncing_thread = boost::thread([this]() {
-      std::cout << "Running thread created with boost::thread!!!" << std::endl;
 
       // sync while enabled
       while (m_syncing_enabled) {
