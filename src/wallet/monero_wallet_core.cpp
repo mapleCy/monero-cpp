@@ -60,6 +60,8 @@
 #include "wallet/wallet_rpc_server_commands_defs.h"
 #include "serialization/binary_utils.h"
 #include "serialization/string.h"
+#include <boost/optional.hpp>
+#include <boost/utility/in_place_factory.hpp>
 
 #ifdef WIN32
 #include <boost/locale.hpp>
@@ -692,16 +694,23 @@ namespace monero {
      * @param wallet provides context to notify external listeners
      * @param wallet2 provides source notifications which this listener propagates to external listeners
      */
-    wallet2_listener(monero_wallet_core& wallet, tools::wallet2& m_w2) : m_wallet(wallet), m_w2(m_w2) {
+    wallet2_listener(monero_wallet_core& wallet, tools::wallet2& wallet2) : m_wallet(wallet), m_w2(wallet2) {
       this->m_sync_start_height = boost::none;
       this->m_sync_end_height = boost::none;
       m_prev_balance = wallet.get_balance();
       m_prev_unlocked_balance = wallet.get_unlocked_balance();
+
+      // process notifications in single thread off main thread
+      m_work = boost::in_place(boost::ref(m_io_service));
+      m_worker_threads.create_thread(boost::bind(&boost::asio::io_service::run, &m_io_service));  // 1 worker thread
     }
 
     ~wallet2_listener() {
       MTRACE("~wallet2_listener()");
       m_w2.callback(nullptr);
+      m_work = boost::none;
+      m_worker_threads.join_all();
+      m_io_service.stop();
     }
 
     void update_listening() {
@@ -714,14 +723,18 @@ namespace monero {
     }
 
     void on_sync_start(uint64_t start_height) {
-      if (m_sync_start_height != boost::none || m_sync_end_height != boost::none) throw std::runtime_error("Sync start or end height should not already be allocated, is previous sync in progress?");
-      m_sync_start_height = start_height;
-      m_sync_end_height = m_wallet.get_daemon_height();
+      m_io_service.post(boost::bind<void>([this, start_height]() {
+        if (m_sync_start_height != boost::none || m_sync_end_height != boost::none) throw std::runtime_error("Sync start or end height should not already be allocated, is previous sync in progress?");
+        m_sync_start_height = start_height;
+        m_sync_end_height = m_wallet.get_daemon_height();
+      }));
     }
 
     void on_sync_end() {
-      m_sync_start_height = boost::none;
-      m_sync_end_height = boost::none;
+      m_io_service.post(boost::bind<void>([this]() {
+        m_sync_start_height = boost::none;
+        m_sync_end_height = boost::none;
+      }));
     }
 
     void on_new_block(uint64_t height, const cryptonote::block& cn_block) override {
@@ -731,8 +744,7 @@ namespace monero {
       if (m_sync_start_height == boost::none || height < *m_sync_start_height) return;
 
       // process notification off main thread
-      // TODO: recycle threads to reduce thread creation?
-      boost::thread([this, height, cn_block]() {
+      m_io_service.post(boost::bind<void>([this, height]() {
 
         // notify listeners of new block
         on_new_block_mt(height);
@@ -748,14 +760,14 @@ namespace monero {
 
         // notify when txs unlock after wallet is synced
         if (balances_changed && m_wallet.is_synced()) check_for_changed_unlocked_txs();
-      });
+      }));
     }
 
     void on_unconfirmed_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index) override {
       if (m_wallet.get_listeners().empty()) return;
 
       // process notification off main threads
-      boost::thread([this, height, txid, cn_tx, amount, subaddr_index]() {
+      m_io_service.post(boost::bind<void>([this, height, txid, cn_tx, amount, subaddr_index]() {
 
         // create library tx
         std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx, true));
@@ -777,14 +789,14 @@ namespace monero {
         // free memory
         output.reset();
         tx.reset();
-      });
+      }));
     }
 
     void on_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index, bool is_change, uint64_t unlock_height) override {
       if (m_wallet.get_listeners().empty()) return;
 
       // process notification off main thread
-      boost::thread([this, height, txid, cn_tx, amount, subaddr_index, is_change, unlock_height]() {
+      m_io_service.post(boost::bind<void>([this, height, txid, cn_tx, amount, subaddr_index, is_change, unlock_height]() {
 
         // create native library tx
         std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
@@ -812,7 +824,7 @@ namespace monero {
         monero_utils::free(block);
         output.reset();
         tx.reset();
-      });
+      }));
     }
 
     void on_money_spent(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx_in, uint64_t amount, const cryptonote::transaction& cn_tx_out, const cryptonote::subaddress_index& subaddr_index) override {
@@ -820,7 +832,7 @@ namespace monero {
       if (&cn_tx_in != &cn_tx_out) throw std::runtime_error("on_money_spent() in tx is different than out tx");
 
       // process notification off main thread
-      boost::thread([this, height, txid, cn_tx_in, amount, cn_tx_out, subaddr_index]() {
+      m_io_service.post(boost::bind<void>([this, height, txid, cn_tx_in, amount, cn_tx_out, subaddr_index]() {
 
         // create native library tx
         std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
@@ -846,7 +858,7 @@ namespace monero {
         monero_utils::free(block);
         output.reset();
         tx.reset();
-      });
+      }));
     }
 
   private:
@@ -857,7 +869,9 @@ namespace monero {
     uint64_t m_prev_balance;
     uint64_t m_prev_unlocked_balance;
     std::set<std::string> m_prev_locked_tx_hashes;
-
+    boost::asio::io_service m_io_service;
+    boost::optional<boost::asio::io_service::work> m_work;
+    boost::thread_group m_worker_threads;
 
     void on_sync_progress_mt(uint64_t height, uint64_t start_height, uint64_t end_height, double percent_done, const std::string& message) {
       for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
