@@ -60,8 +60,7 @@
 #include "wallet/wallet_rpc_server_commands_defs.h"
 #include "serialization/binary_utils.h"
 #include "serialization/string.h"
-#include <boost/optional.hpp>
-#include <boost/utility/in_place_factory.hpp>
+#include "common/threadpool.h"
 
 #ifdef WIN32
 #include <boost/locale.hpp>
@@ -699,18 +698,12 @@ namespace monero {
       this->m_sync_end_height = boost::none;
       m_prev_balance = wallet.get_balance();
       m_prev_unlocked_balance = wallet.get_unlocked_balance();
-
-      // process notifications in single thread off main thread
-      m_work = boost::in_place(boost::ref(m_io_service));
-      m_worker_threads.create_thread(boost::bind(&boost::asio::io_service::run, &m_io_service));  // 1 worker thread
+      m_notification_pool = std::unique_ptr<tools::threadpool>(tools::threadpool::getNewForUnitTests(tools::get_max_concurrency()));  // TODO (monero-core): utility can be for general use
     }
 
     ~wallet2_listener() {
       MTRACE("~wallet2_listener()");
       m_w2.callback(nullptr);
-      m_work = boost::none;
-      m_worker_threads.join_all();
-      m_io_service.stop();
     }
 
     void update_listening() {
@@ -723,18 +716,20 @@ namespace monero {
     }
 
     void on_sync_start(uint64_t start_height) {
-      m_io_service.post(boost::bind<void>([this, start_height]() {
+      tools::threadpool::waiter waiter(*m_notification_pool);
+      m_notification_pool->submit(&waiter, [this, start_height]() {
         if (m_sync_start_height != boost::none || m_sync_end_height != boost::none) throw std::runtime_error("Sync start or end height should not already be allocated, is previous sync in progress?");
         m_sync_start_height = start_height;
         m_sync_end_height = m_wallet.get_daemon_height();
-      }));
+      });
     }
 
     void on_sync_end() {
-      m_io_service.post(boost::bind<void>([this]() {
+      tools::threadpool::waiter waiter(*m_notification_pool);
+      m_notification_pool->submit(&waiter, [this]() {
         m_sync_start_height = boost::none;
         m_sync_end_height = boost::none;
-      }));
+      });
     }
 
     void on_new_block(uint64_t height, const cryptonote::block& cn_block) override {
@@ -743,8 +738,9 @@ namespace monero {
       // ignore notifications before sync start height, irrelevant to clients
       if (m_sync_start_height == boost::none || height < *m_sync_start_height) return;
 
-      // process notification off main thread
-      m_io_service.post(boost::bind<void>([this, height]() {
+      // queue notification processing off main thread
+      tools::threadpool::waiter waiter(*m_notification_pool);
+      m_notification_pool->submit(&waiter, [this, height]() {
 
         // notify listeners of new block
         on_new_block_mt(height);
@@ -760,14 +756,15 @@ namespace monero {
 
         // notify when txs unlock after wallet is synced
         if (balances_changed && m_wallet.is_synced()) check_for_changed_unlocked_txs();
-      }));
+      });
     }
 
     void on_unconfirmed_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index) override {
       if (m_wallet.get_listeners().empty()) return;
 
-      // process notification off main threads
-      m_io_service.post(boost::bind<void>([this, height, txid, cn_tx, amount, subaddr_index]() {
+      // queue notification processing off main thread
+      tools::threadpool::waiter waiter(*m_notification_pool);
+      m_notification_pool->submit(&waiter, [this, height, txid, cn_tx, amount, subaddr_index]() {
 
         // create library tx
         std::shared_ptr<monero_tx_wallet> tx = std::static_pointer_cast<monero_tx_wallet>(monero_utils::cn_tx_to_tx(cn_tx, true));
@@ -789,14 +786,15 @@ namespace monero {
         // free memory
         output.reset();
         tx.reset();
-      }));
+      });
     }
 
     void on_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index, bool is_change, uint64_t unlock_height) override {
       if (m_wallet.get_listeners().empty()) return;
 
-      // process notification off main thread
-      m_io_service.post(boost::bind<void>([this, height, txid, cn_tx, amount, subaddr_index, is_change, unlock_height]() {
+      // queue notification processing off main thread
+      tools::threadpool::waiter waiter(*m_notification_pool);
+      m_notification_pool->submit(&waiter, [this, height, txid, cn_tx, amount, subaddr_index, is_change, unlock_height]() {
 
         // create native library tx
         std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
@@ -824,15 +822,16 @@ namespace monero {
         monero_utils::free(block);
         output.reset();
         tx.reset();
-      }));
+      });
     }
 
     void on_money_spent(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& cn_tx_in, uint64_t amount, const cryptonote::transaction& cn_tx_out, const cryptonote::subaddress_index& subaddr_index) override {
       if (m_wallet.get_listeners().empty()) return;
       if (&cn_tx_in != &cn_tx_out) throw std::runtime_error("on_money_spent() in tx is different than out tx");
 
-      // process notification off main thread
-      m_io_service.post(boost::bind<void>([this, height, txid, cn_tx_in, amount, cn_tx_out, subaddr_index]() {
+      // queue notification processing off main thread
+      tools::threadpool::waiter waiter(*m_notification_pool);
+      m_notification_pool->submit(&waiter, [this, height, txid, cn_tx_in, amount, cn_tx_out, subaddr_index]() {
 
         // create native library tx
         std::shared_ptr<monero_block> block = std::make_shared<monero_block>();
@@ -858,7 +857,7 @@ namespace monero {
         monero_utils::free(block);
         output.reset();
         tx.reset();
-      }));
+      });
     }
 
   private:
@@ -869,45 +868,53 @@ namespace monero {
     uint64_t m_prev_balance;
     uint64_t m_prev_unlocked_balance;
     std::set<std::string> m_prev_locked_tx_hashes;
-    boost::asio::io_service m_io_service;
-    boost::optional<boost::asio::io_service::work> m_work;
-    boost::thread_group m_worker_threads;
+    std::unique_ptr<tools::threadpool> m_notification_pool;  // threadpool of size 1 to queue notifications for external announcement
 
     void on_sync_progress_mt(uint64_t height, uint64_t start_height, uint64_t end_height, double percent_done, const std::string& message) {
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waiter waiter(tpool);
       for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        boost::thread([this, listener, height, start_height, end_height, percent_done, message]() {
+        tpool.submit(&waiter, [this, listener, height, start_height, end_height, percent_done, message]() {
           listener->on_sync_progress(height, start_height, end_height, percent_done, message);
         });
       }
     }
 
     void on_new_block_mt(uint64_t height) {
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waiter waiter(tpool);
       for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        boost::thread([this, listener, height]() {
+        tpool.submit(&waiter, [this, listener, height]() {
           listener->on_new_block(height);
         });
       }
     }
 
     void on_balances_changed_mt(uint64_t new_balance, uint64_t new_unlocked_balance) {
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waiter waiter(tpool);
       for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        boost::thread([this, listener, new_balance, new_unlocked_balance]() {
+        tpool.submit(&waiter, [this, listener, new_balance, new_unlocked_balance]() {
           listener->on_balances_changed(new_balance, new_unlocked_balance);
         });
       }
     }
 
     void on_output_received_mt(const monero_output_wallet& output) {
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waiter waiter(tpool);
       for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        boost::thread([this, listener, output]() {
+        tpool.submit(&waiter, [this, listener, output]() {
           listener->on_output_received(output);
         });
       }
     }
 
     void on_output_spent_mt(const monero_output_wallet& output) {
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waiter waiter(tpool);
       for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        boost::thread([this, listener, output]() {
+        tpool.submit(&waiter, [this, listener, output]() {
           listener->on_output_spent(output);
         });
       }
@@ -3217,13 +3224,6 @@ namespace monero {
 
   void monero_wallet_core::init_common() {
     MTRACE("monero_wallet_core.cpp init_common()");
-    m_w2_listener = std::unique_ptr<wallet2_listener>(new wallet2_listener(*this, *m_w2));
-    if (get_daemon_connection() == boost::none) m_is_connected = false;
-    m_is_synced = false;
-    m_rescan_on_sync = false;
-    m_syncing_enabled = false;
-    m_sync_loop_running = false;
-    m_syncing_interval = DEFAULT_SYNC_INTERVAL_MILLIS;
 
     // emscripten config
     #if defined(__EMSCRIPTEN__)
@@ -3231,9 +3231,19 @@ namespace monero {
 
       // single-threaded if emscripten pthreads not defined
       #if !defined(__EMSCRIPTEN_PTHREADS__)
+        std::cout << "Setting single threaded because __EMSCRPTEN_PTHREADS__ not defined" << std::endl;
         tools::set_max_concurrency(1);  // TODO: single-threaded emscripten tools::get_max_concurrency() correctly returns 1 on Safari but 8 on Chrome which fails in common/threadpool constructor
       #endif
     #endif
+
+    // initialize internal state
+    m_w2_listener = std::unique_ptr<wallet2_listener>(new wallet2_listener(*this, *m_w2));
+    if (get_daemon_connection() == boost::none) m_is_connected = false;
+    m_is_synced = false;
+    m_rescan_on_sync = false;
+    m_syncing_enabled = false;
+    m_sync_loop_running = false;
+    m_syncing_interval = DEFAULT_SYNC_INTERVAL_MILLIS;
   }
 
   std::vector<std::shared_ptr<monero_transfer>> monero_wallet_core::get_transfers_aux(const monero_transfer_query& query) const {
@@ -3475,8 +3485,16 @@ namespace monero {
     if (m_sync_loop_running) return;  // only run one loop at a time
     m_sync_loop_running = true;
 
+//    tools::threadpool& tpool = tools::threadpool::getInstance();
+//    tools::threadpool::waiter waiter(tpool);
+//    for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+//      std::cout << "creating thread 1" << std::endl;
+//      tpool.submit(&waiter, [this, listener, height, start_height, end_height, percent_done, message]() {
+
     // start sync loop thread
+    std::cout << "Creating thread with boost::thread" << std::endl;
     m_syncing_thread = boost::thread([this]() {
+      std::cout << "Running thread created with boost::thread!!!" << std::endl;
 
       // sync while enabled
       while (m_syncing_enabled) {
