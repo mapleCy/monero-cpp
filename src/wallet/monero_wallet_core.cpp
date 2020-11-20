@@ -3233,7 +3233,6 @@ namespace monero {
 
       // single-threaded if emscripten pthreads not defined
       #if !defined(__EMSCRIPTEN_PTHREADS__)
-        std::cout << "Setting single threaded because __EMSCRPTEN_PTHREADS__ not defined" << std::endl;
         tools::set_max_concurrency(1);  // TODO: single-threaded emscripten tools::get_max_concurrency() correctly returns 1 on Safari but 8 on Chrome which fails in common/threadpool constructor
       #endif
     #endif
