@@ -730,8 +730,8 @@ namespace monero {
       m_notification_pool->submit(&waiter, [this]() {
         m_sync_start_height = boost::none;
         m_sync_end_height = boost::none;
-        m_notification_pool->recycle();
       });
+      m_notification_pool->recycle();
     }
 
     void on_new_block(uint64_t height, const cryptonote::block& cn_block) override {
