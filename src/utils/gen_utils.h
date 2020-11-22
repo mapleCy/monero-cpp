@@ -123,7 +123,7 @@ namespace gen_utils
 
     // resolve different booleans
     if (resolve_true != boost::none) {
-      return val1 == resolve_true ? val1 : val2; // if resolve true, return true, else return false
+      return val1 == *resolve_true ? val1 : val2; // if resolve true, return true, else return false
     } else {
       throw std::runtime_error(std::string("Cannot reconcile booleans: ") + to_string(val1) + std::string(" vs ") + to_string(val2) + (!err_msg.empty() ? std::string(". ") + err_msg : std::string("")));
     }
