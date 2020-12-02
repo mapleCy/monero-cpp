@@ -745,13 +745,17 @@ namespace monero {
       m_notification_pool->submit(&waiter, [this, height]() {
 
         // notify listeners of new block
-        on_new_block_mt(height);
+        for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+          listener->on_new_block(height);
+        }
 
         // notify listeners of sync progress
         if (height >= *m_sync_end_height) m_sync_end_height = height + 1; // increase end height if necessary
         double percent_done = (double) (height - *m_sync_start_height + 1) / (double) (*m_sync_end_height - *m_sync_start_height);
         std::string message = std::string("Synchronizing");
-        on_sync_progress_mt(height, *m_sync_start_height, *m_sync_end_height, percent_done, message);
+        for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+          listener->on_sync_progress(height, *m_sync_start_height, *m_sync_end_height, percent_done, message);
+        }
 
         // notify if balances change
         bool balances_changed = check_for_changed_balances();
@@ -780,7 +784,9 @@ namespace monero {
         output->m_subaddress_index = subaddr_index.minor;
 
         // notify listeners of output
-        on_output_received_mt(*output);
+        for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+          listener->on_output_received(*output);
+        }
 
         // notify if balances changed
         check_for_changed_balances();
@@ -815,7 +821,9 @@ namespace monero {
         output->m_subaddress_index = subaddr_index.minor;
 
         // notify listeners of output
-        on_output_received_mt(*output);
+        for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+          listener->on_output_received(*output);
+        }
 
         // watch for unlock
         m_prev_locked_tx_hashes.insert(tx->m_hash.get());
@@ -850,7 +858,9 @@ namespace monero {
         output->m_subaddress_index = subaddr_index.minor;
 
         // notify listeners of output
-        on_output_spent_mt(*output);
+        for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+          listener->on_output_spent(*output);
+        }
 
         // watch for unlock
         m_prev_locked_tx_hashes.insert(tx->m_hash.get());
@@ -872,63 +882,15 @@ namespace monero {
     std::set<std::string> m_prev_locked_tx_hashes;
     std::unique_ptr<tools::threadpool> m_notification_pool;  // threadpool of size 1 to queue notifications for external announcement
 
-    void on_sync_progress_mt(uint64_t height, uint64_t start_height, uint64_t end_height, double percent_done, const std::string& message) {
-      tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waiter waiter(tpool);
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        tpool.submit(&waiter, [this, listener, height, start_height, end_height, percent_done, message]() {
-          listener->on_sync_progress(height, start_height, end_height, percent_done, message);
-        });
-      }
-    }
-
-    void on_new_block_mt(uint64_t height) {
-      tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waiter waiter(tpool);
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        tpool.submit(&waiter, [this, listener, height]() {
-          listener->on_new_block(height);
-        });
-      }
-    }
-
-    void on_balances_changed_mt(uint64_t new_balance, uint64_t new_unlocked_balance) {
-      tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waiter waiter(tpool);
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        tpool.submit(&waiter, [this, listener, new_balance, new_unlocked_balance]() {
-          listener->on_balances_changed(new_balance, new_unlocked_balance);
-        });
-      }
-    }
-
-    void on_output_received_mt(const monero_output_wallet& output) {
-      tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waiter waiter(tpool);
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        tpool.submit(&waiter, [this, listener, output]() {
-          listener->on_output_received(output);
-        });
-      }
-    }
-
-    void on_output_spent_mt(const monero_output_wallet& output) {
-      tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waiter waiter(tpool);
-      for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
-        tpool.submit(&waiter, [this, listener, output]() {
-          listener->on_output_spent(output);
-        });
-      }
-    }
-
     bool check_for_changed_balances() {
       uint64_t balance = m_wallet.get_balance();
       uint64_t unlocked_balance = m_wallet.get_unlocked_balance();
       if (balance != m_prev_balance || unlocked_balance != m_prev_unlocked_balance) {
         m_prev_balance = balance;
         m_prev_unlocked_balance = unlocked_balance;
-        on_balances_changed_mt(balance, unlocked_balance);
+        for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+          listener->on_balances_changed(balance, unlocked_balance);
+        }
         return true;
       }
       return false;
@@ -970,7 +932,9 @@ namespace monero {
       // notify listeners of newly unlocked tx outputs
       for (const std::shared_ptr<monero_tx_wallet>& unlocked_tx : txs_no_longer_locked) {
         for (const std::shared_ptr<monero_output_wallet>& output : unlocked_tx->get_outputs_wallet()) {
-          on_output_received_mt(*output);
+          for (monero_wallet_listener* listener : m_wallet.get_listeners()) {
+            listener->on_output_received(*output);
+          }
         }
       }
 
