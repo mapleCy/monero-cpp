@@ -1,3 +1,5 @@
+list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 cmake_minimum_required(VERSION 3.4.1)
 
 #SET(CMAKE_C_COMPILER /path/to/c/compiler)
@@ -9,8 +11,8 @@ SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -std=c++11 -F/Library/Frameworks -
 project(MoneroCppLibrary)
 
 set(BUILD_LIBRARY ON)
-set(BUILD_SAMPLE OFF)
-set(BUILD_SCRATCHPAD OFF)
+set(BUILD_SAMPLE ON)
+set(BUILD_SCRATCHPAD ON)
 
 ###################
 # monero-project
@@ -56,17 +58,8 @@ endif()
 message(STATUS EXTRA_LIBRARIES: ${EXTRA_LIBRARIES})
 
 ############
-# hidapi
-############
-
-add_library(hidapi STATIC IMPORTED)
-set_target_properties(hidapi PROPERTIES IMPORTED_LOCATION
-        ${EXTERNAL_LIBS_DIR}/hidapi/libhidapi.a)
-        
-############
 # Epee
 ############
-
 
 
 ############
@@ -102,17 +95,42 @@ if(STATIC AND NOT IOS)
     set(OPENSSL_LIBRARIES "${OPENSSL_LIBRARIES};${CMAKE_DL_LIBS};${CMAKE_THREAD_LIBS_INIT}")
   endif()
 endif()
-    
+
 ############
 # libsodium
 ############
 
 include_directories(external/libsodium/include/sodium)
+find_library(SODIUM_LIBRARY sodium REQUIRED)
+message(STATUS "Using libsodium library at ${SODIUM_LIBRARY}")
 
-add_library(sodium STATIC IMPORTED)
-set_target_properties(sodium PROPERTIES IMPORTED_LOCATION
-    ${EXTERNAL_LIBS_DIR}/libsodium/libsodium.a)
+############
+# HIDAPI
+############
 
+if(APPLE)
+  include_directories(SYSTEM /usr/include/malloc)
+  if(POLICY CMP0042)
+    cmake_policy(SET CMP0042 NEW)
+  endif()
+endif()
+
+if (APPLE AND NOT IOS)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=x86-64 -fvisibility=default -std=c++11")
+  if (NOT OPENSSL_ROOT_DIR)
+      EXECUTE_PROCESS(COMMAND brew --prefix openssl
+        OUTPUT_VARIABLE OPENSSL_ROOT_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    message(STATUS "Using OpenSSL found at ${OPENSSL_ROOT_DIR}")
+  endif()
+endif()
+
+find_package(HIDAPI REQUIRED)
+
+message(STATUS "Using HIDAPI include dir at ${HIDAPI_INCLUDE_DIR}")
+add_definitions(-DHAVE_HIDAPI)
+include_directories(${HIDAPI_INCLUDE_DIR})
+    
 #############
 # Monero
 #############
@@ -229,11 +247,10 @@ if (BUILD_LIBRARY)
     
     target_link_libraries(monero-cpp
     
-        hidapi
-        
         ${Boost_LIBRARIES}
-        
         ${OPENSSL_LIBRARIES}
+        ${SODIUM_LIBRARY}
+        ${HIDAPI_LIBRARIES}
         
         wallet_merged
         wallet_crypto
@@ -242,7 +259,6 @@ if (BUILD_LIBRARY)
         lmdb
         epee
         unbound
-        sodium
         easylogging
         
         cryptonote_core
@@ -276,11 +292,10 @@ if (BUILD_SAMPLE)
     
     target_link_libraries(sample_code
     
-        hidapi
-        
         ${Boost_LIBRARIES}
-        
         ${OPENSSL_LIBRARIES}
+        ${SODIUM_LIBRARY}
+        ${HIDAPI_LIBRARIES}
         
         wallet_merged
         wallet_crypto
@@ -289,7 +304,6 @@ if (BUILD_SAMPLE)
         lmdb
         epee
         unbound
-        sodium
         easylogging
         
         cryptonote_core
@@ -323,11 +337,10 @@ if (BUILD_SCRATCHPAD)
     
     target_link_libraries(scratchpad
     
-        hidapi
-        
         ${Boost_LIBRARIES}
-        
         ${OPENSSL_LIBRARIES}
+        ${SODIUM_LIBRARY}
+        ${HIDAPI_LIBRARIES}
         
         wallet_merged
         wallet_crypto
@@ -336,7 +349,6 @@ if (BUILD_SCRATCHPAD)
         lmdb
         epee
         unbound
-        sodium
         easylogging
         
         cryptonote_core
