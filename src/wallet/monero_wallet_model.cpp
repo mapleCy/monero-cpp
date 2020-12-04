@@ -743,7 +743,19 @@ namespace monero {
     monero_transfer::merge(self, other);
     m_subaddress_indices = gen_utils::reconcile(m_subaddress_indices, other->m_subaddress_indices, "outgoing transfer m_subaddress_indices");
     m_addresses = gen_utils::reconcile(m_addresses, other->m_addresses, "outgoing transfer m_addresses");
-    m_destinations = gen_utils::reconcile(m_destinations, other->m_destinations, "outgoing transfer m_destinations");
+
+    // use destinations if available on one, otherwise check deep equality
+    // TODO: java uses GenUtils.reconcile() which does deep comparison, but c++ would require specialized equality check for structs with shared pointers, so checking equality here
+    if (m_destinations.empty() && !other->m_destinations.empty()) m_destinations = other->m_destinations;
+    else if (!m_destinations.empty() && !other->m_destinations.empty()) {
+      if (m_destinations.size() != other->m_destinations.size()) throw std::runtime_error("Destination vectors are different sizes");
+      for (int i = 0; i < m_destinations.size(); i++) {
+        if (m_destinations[i]->m_address.get() != other->m_destinations[i]->m_address.get() ||
+            m_destinations[i]->m_amount.get() != other->m_destinations[i]->m_amount.get()) {
+          throw std::runtime_error("Destination vectors are different");
+        }
+      }
+    }
   }
 
   // ----------------------- MONERO TRANSFER QUERY --------------------------

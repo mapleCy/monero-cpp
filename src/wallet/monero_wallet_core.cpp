@@ -3265,26 +3265,6 @@ namespace monero {
     std::map<std::string, std::shared_ptr<monero_tx_wallet>> tx_map;
     std::map<uint64_t, std::shared_ptr<monero_block>> block_map;
 
-    // get confirmed incoming transfers
-    if (is_in) {
-      std::list<std::pair<crypto::hash, tools::wallet2::payment_details>> payments;
-      m_w2->get_payments(payments, min_height, max_height, account_index, subaddress_indices);
-      for (std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
-        std::shared_ptr<monero_tx_wallet> tx = build_tx_with_incoming_transfer(*m_w2, height, i->first, i->second);
-        merge_tx(tx, tx_map, block_map, false);
-      }
-    }
-
-    // get confirmed outgoing transfers
-    if (is_out) {
-      std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>> payments;
-      m_w2->get_payments_out(payments, min_height, max_height, account_index, subaddress_indices);
-      for (std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
-        std::shared_ptr<monero_tx_wallet> tx = build_tx_with_outgoing_transfer(*m_w2, height, i->first, i->second);
-        merge_tx(tx, tx_map, block_map, false);
-      }
-    }
-
     // get unconfirmed or failed outgoing transfers
     if (is_pending || is_failed) {
       std::list<std::pair<crypto::hash, tools::wallet2::unconfirmed_transfer_details>> upayments;
@@ -3308,6 +3288,26 @@ namespace monero {
       m_w2->get_unconfirmed_payments(payments, account_index, subaddress_indices);
       for (std::list<std::pair<crypto::hash, tools::wallet2::pool_payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
         std::shared_ptr<monero_tx_wallet> tx = build_tx_with_incoming_transfer_unconfirmed(*m_w2, height, i->first, i->second);
+        merge_tx(tx, tx_map, block_map, false);
+      }
+    }
+
+    // get confirmed incoming transfers
+    if (is_in) {
+      std::list<std::pair<crypto::hash, tools::wallet2::payment_details>> payments;
+      m_w2->get_payments(payments, min_height, max_height, account_index, subaddress_indices);
+      for (std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
+        std::shared_ptr<monero_tx_wallet> tx = build_tx_with_incoming_transfer(*m_w2, height, i->first, i->second);
+        merge_tx(tx, tx_map, block_map, false);
+      }
+    }
+
+    // get confirmed outgoing transfers
+    if (is_out) {
+      std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>> payments;
+      m_w2->get_payments_out(payments, min_height, max_height, account_index, subaddress_indices);
+      for (std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
+        std::shared_ptr<monero_tx_wallet> tx = build_tx_with_outgoing_transfer(*m_w2, height, i->first, i->second);
         merge_tx(tx, tx_map, block_map, false);
       }
     }
