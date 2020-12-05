@@ -745,7 +745,7 @@ namespace monero {
     m_addresses = gen_utils::reconcile(m_addresses, other->m_addresses, "outgoing transfer m_addresses");
 
     // use destinations if available on one, otherwise check deep equality
-    // TODO: java uses GenUtils.reconcile() which does deep comparison, but c++ would require specialized equality check for structs with shared pointers, so checking equality here
+    // TODO: java/javascript use reconcile() for deep comparison, but c++ would require specialized equality check for structs with shared pointers, so checking equality here
     if (m_destinations.empty() && !other->m_destinations.empty()) m_destinations = other->m_destinations;
     else if (!m_destinations.empty() && !other->m_destinations.empty()) {
       if (m_destinations.size() != other->m_destinations.size()) throw std::runtime_error("Destination vectors are different sizes");
