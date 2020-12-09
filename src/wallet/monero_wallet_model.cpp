@@ -1137,7 +1137,8 @@ namespace monero {
 
     // set num values
     rapidjson::Value value_num(rapidjson::kNumberType);
-    if (m_priority != boost::none) monero_utils::addJsonMember("priority", m_priority.get(), allocator, root, value_num);
+    //if (m_priority != boost::none) monero_utils::addJsonMember("priority", m_priority.get(), allocator, root, value_num);
+    if (m_priority != boost::none) monero_utils::addJsonMember("priority", (uint8_t) m_priority.get(), allocator, root, value_num);
     if (m_ring_size != boost::none) monero_utils::addJsonMember("ringSize", m_ring_size.get(), allocator, root, value_num);
     if (m_account_index != boost::none) monero_utils::addJsonMember("accountIndex", m_account_index.get(), allocator, root, value_num);
     if (m_unlock_height != boost::none) monero_utils::addJsonMember("unlockHeight", m_unlock_height.get(), allocator, root, value_num);
